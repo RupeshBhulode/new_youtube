@@ -2,9 +2,9 @@
 
 from app.youtube_api import youtube
 from app.models import hate_model, request_model, question_model, feedback_model
-from app.embedding_helper import get_embeddings   # ✅ NEW!
-from sklearn.cluster import KMeans
-import numpy as np
+
+
+
 from googleapiclient.errors import HttpError
 
 def analyze_video_comments(video_id: str, max_comments: int = 200):

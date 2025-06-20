@@ -6,7 +6,7 @@ from app.schemas import ChannelInfoSchema, MultiVideoTrendResponse, VideoTrend
 from app.youtube_api import youtube, get_channel_info_data
 from app.utils import analyze_video_comments, summarize_comments
 from app.models import hate_model, request_model, question_model, feedback_model
-from sklearn.cluster import KMeans
+
 import numpy as np
 from datetime import datetime, timedelta
 from collections import defaultdict
