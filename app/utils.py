@@ -1,16 +1,14 @@
+# app/utils.py
+
 from app.youtube_api import youtube
 from app.models import hate_model, request_model, question_model, feedback_model
-from sentence_transformers import SentenceTransformer
+from app.embedding_helper import get_embeddings   # ✅ NEW!
 from sklearn.cluster import KMeans
 import numpy as np
-
 from googleapiclient.errors import HttpError
 
 def analyze_video_comments(video_id: str, max_comments: int = 200):
-    """
-    Fetch comments and categorize counts for 1 video.
-    If comments are disabled, safely return zero counts.
-    """
+    # (same as before, no changes)
     comments = []
     next_page_token = None
 
@@ -37,7 +35,6 @@ def analyze_video_comments(video_id: str, max_comments: int = 200):
 
     except HttpError as e:
         if e.resp.status == 403 and "commentsDisabled" in str(e):
-            # Comments are disabled for this video
             return {
                 "hate_count": 0,
                 "request_count": 0,
@@ -45,7 +42,6 @@ def analyze_video_comments(video_id: str, max_comments: int = 200):
                 "feedback_count": 0
             }
         else:
-            # Other API errors: raise to debug properly
             raise
 
     hate_count = sum([1 for c in comments if hate_model.predict([c])[0] == 1])
@@ -59,14 +55,15 @@ def analyze_video_comments(video_id: str, max_comments: int = 200):
         "question_count": question_count,
         "feedback_count": feedback_count
     }
-
-def summarize_comments(comments, model, max_points=10):
+"""
+def summarize_comments(comments, max_points=10):
     if not comments:
         return ["No comments in this category."]
     if len(comments) <= max_points:
         return comments
 
-    embeddings = model.encode(comments)
+    embeddings = get_embeddings(comments)    # ✅ Use remote embeddings
+    embeddings = np.array(embeddings)
 
     for k in range(max_points, 1, -1):
         kmeans = KMeans(n_clusters=k, random_state=0)
@@ -92,3 +89,16 @@ def summarize_comments(comments, model, max_points=10):
         summary_sentences.append(comments[closest_index])
 
     return summary_sentences
+"""
+def summarize_comments(comments, max_points=10):
+    """
+    Instead of clustering: just return the first `max_points` comments.
+    If there are fewer, return them all.
+    """
+    if not comments:
+        return ["No comments in this category."]
+    
+    # Filter out empty comments (optional)
+    comments = [c for c in comments if c and isinstance(c, str)]
+    
+    return comments[:max_points]

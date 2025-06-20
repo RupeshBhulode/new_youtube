@@ -2,6 +2,6 @@ fastapi
 uvicorn
 google-api-python-client
 joblib
-sentence-transformers
 scikit-learn
 matplotlib
+requests

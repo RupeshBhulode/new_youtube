@@ -1,12 +1,11 @@
+# app/main.py
+
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.schemas import ChannelInfoSchema
-from app.youtube_api import youtube
-from app.youtube_api import get_channel_info_data
+from app.schemas import ChannelInfoSchema, MultiVideoTrendResponse, VideoTrend
+from app.youtube_api import youtube, get_channel_info_data
 from app.utils import analyze_video_comments, summarize_comments
 from app.models import hate_model, request_model, question_model, feedback_model
-from app.schemas import MultiVideoTrendResponse, VideoTrend
-from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 import numpy as np
 from datetime import datetime, timedelta
@@ -24,7 +23,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-model = SentenceTransformer('all-MiniLM-L6-v2')
+
 
 @app.get("/channel_info", response_model=ChannelInfoSchema)
 async def channel_info(
@@ -151,9 +150,9 @@ async def video_analysis(
 
     # === 4) Summarize each category using your clustering method ===
     summaries = {
-        "questions": summarize_comments(questions, model, max_points=10),
-        "requests": summarize_comments(requests, model, max_points=10),
-        "feedback": summarize_comments(feedbacks, model, max_points=10)
+        "questions": summarize_comments(questions, max_points=10),
+        "requests": summarize_comments(requests,  max_points=10),
+        "feedback": summarize_comments(feedbacks,  max_points=10)
     }
 
     return {
