@@ -28,5 +28,9 @@ class VideoTrend(BaseModel):
 class MultiVideoTrendResponse(BaseModel):
     trend_data: List[VideoTrend]
 
+class CommentRequest(BaseModel):
+    comments: List[str]
 
+class RankedCommentsResponse(BaseModel):
+    top_comments: List[str]
     

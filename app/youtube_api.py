@@ -1,10 +1,30 @@
 from googleapiclient.discovery import build # type: ignore
+from datetime import datetime
 
 
+#API_KEY =  'AIzaSyDYjOKHNOf-fY55p_MQA93Eaj13Uvv4puY'
+#AIzaSyA0s8gvFZJBQHgSlYdF4lG78FM0YLb4wm0
+#AIzaSyCTFcusoP1DJb_nwSMwftESGyFchn_Kdgo
 
-API_KEY =  'AIzaSyDYjOKHNOf-fY55p_MQA93Eaj13Uvv4puY'
 
-youtube = build("youtube", "v3", developerKey=API_KEY)
+API_KEYS = [
+    "AIzaSyDYjOKHNOf-fY55p_MQA93Eaj13Uvv4puY",
+    "AIzaSyA0s8gvFZJBQHgSlYdF4lG78FM0YLb4wm0",
+    "AIzaSyCTFcusoP1DJb_nwSMwftESGyFchn_Kdgo"
+]
+
+def get_current_api_key():
+    """Rotate API key every 2 hours UTC."""
+    now = datetime.utcnow()
+    hour = now.hour
+    key_index = (hour // 1) % len(API_KEYS)
+    return API_KEYS[key_index]
+
+# Get the rotated key
+current_key = get_current_api_key()
+
+# Build the YouTube API client
+youtube = build("youtube", "v3", developerKey=current_key)
 
 def get_channel_info_data(channel_name: str, is_premium: bool):
     search_response = youtube.search().list(
@@ -28,6 +48,10 @@ def get_channel_info_data(channel_name: str, is_premium: bool):
         id=channel_id
     ).execute()
     subscriber_count = int(stats["items"][0]["statistics"].get("subscriberCount", 0))
+
+  # Get branding settings (for banner image)
+    
+
 
     uploads_playlist = youtube.channels().list(
         part="contentDetails",

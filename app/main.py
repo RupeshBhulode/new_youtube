@@ -1,10 +1,11 @@
 # app/main.py
 
+from app.filters import filter_feedbacks, filter_questions, filter_requests
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.schemas import ChannelInfoSchema, MultiVideoTrendResponse, VideoTrend
 from app.youtube_api import youtube, get_channel_info_data
-from app.utils import analyze_video_comments, summarize_comments
+from app.utils import analyze_video_comments, rank_comments, summarize_comments
 from app.models import hate_model, request_model, question_model, feedback_model
 
 import numpy as np
@@ -149,18 +150,47 @@ async def video_analysis(
             pie_chart["neutral"] += 1
 
     # === 4) Summarize each category using your clustering method ===
-    summaries = {
+    """summaries = {
         "questions": summarize_comments(questions, max_points=10),
         "requests": summarize_comments(requests,  max_points=10),
         "feedback": summarize_comments(feedbacks,  max_points=10)
-    }
+    }"""
+    """
+    filters = {
+        "questions": filter_questions(questions),
+        "requests": filter_requests(requests),
+        "feedback": filter_feedbacks(feedbacks)
 
+    }
+    """
+    
+    questions_n = questions
+    requests_n = requests
+    feedback_n = feedbacks
+
+    if len(questions) >= 10:
+        questions_n = filter_questions(questions)
+        questions_n = rank_comments(questions_n)
+
+    if len(requests) >= 10:
+        requests_n = filter_requests(requests)
+        requests_n = rank_comments(requests_n)
+
+    if len(feedbacks) >= 10:
+        feedback_n = filter_feedbacks(feedbacks)
+        feedback_n = rank_comments(feedback_n)    
+    
+    filters = {
+    "questions": questions_n,
+    "requests": requests_n,
+    "feedback": feedback_n,
+    }
     return {
         "video_id": video_id,
         "title": title,
         "thumbnail_url": thumbnail_url,
         "pie_chart_data": pie_chart,
-        "summaries": summaries
+        "summaries": filters
     }
 
 

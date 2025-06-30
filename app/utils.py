@@ -3,7 +3,9 @@
 from app.youtube_api import youtube
 from app.models import hate_model, request_model, question_model, feedback_model
 
-
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
 from googleapiclient.errors import HttpError
 
@@ -55,46 +57,9 @@ def analyze_video_comments(video_id: str, max_comments: int = 200):
         "question_count": question_count,
         "feedback_count": feedback_count
     }
-"""
+
 def summarize_comments(comments, max_points=10):
-    if not comments:
-        return ["No comments in this category."]
-    if len(comments) <= max_points:
-        return comments
-
-    embeddings = get_embeddings(comments)    # ✅ Use remote embeddings
-    embeddings = np.array(embeddings)
-
-    for k in range(max_points, 1, -1):
-        kmeans = KMeans(n_clusters=k, random_state=0)
-        kmeans.fit(embeddings)
-        cluster_assignment = kmeans.labels_
-        cluster_centers = kmeans.cluster_centers_
-
-        empty = any(np.sum(cluster_assignment == i) == 0 for i in range(k))
-        if not empty:
-            break
-    else:
-        k = 1
-        kmeans = KMeans(n_clusters=k, random_state=0).fit(embeddings)
-        cluster_assignment = kmeans.labels_
-        cluster_centers = kmeans.cluster_centers_
-
-    summary_sentences = []
-    for i in range(k):
-        cluster_indices = np.where(cluster_assignment == i)[0]
-        closest_index = cluster_indices[
-            np.argmin(np.linalg.norm(embeddings[cluster_indices] - cluster_centers[i], axis=1))
-        ]
-        summary_sentences.append(comments[closest_index])
-
-    return summary_sentences
-"""
-def summarize_comments(comments, max_points=10):
-    """
-    Instead of clustering: just return the first `max_points` comments.
-    If there are fewer, return them all.
-    """
+    
     if not comments:
         return ["No comments in this category."]
     
@@ -102,3 +67,37 @@ def summarize_comments(comments, max_points=10):
     comments = [c for c in comments if c and isinstance(c, str)]
     
     return comments[:max_points]
+
+
+def rank_comments(comments: list, top_k: int = 10):
+    if len(comments) == 0:
+        return []
+
+    # Step 1: Vectorize
+    vectorizer = TfidfVectorizer(stop_words='english')
+    X = vectorizer.fit_transform(comments)
+
+    # Step 2: Mean vector
+    mean_vec = np.asarray(X.mean(axis=0))
+
+    # Step 3: Cosine similarity to mean
+    scores = cosine_similarity(X, mean_vec).flatten()
+
+    # Step 4: Sort comments by similarity
+    sorted_indices = np.argsort(scores)[::-1]
+    sorted_comments = [comments[i] for i in sorted_indices]
+
+    # Step 5: Chunk the sorted list into 'top_k' parts and take one from each
+    chunk_size = len(sorted_comments) // top_k
+    diverse_comments = []
+
+    for i in range(top_k):
+        start = i * chunk_size
+        end = start + chunk_size
+        if start >= len(sorted_comments):
+            break
+        chunk = sorted_comments[start:end]
+        if chunk:
+            diverse_comments.append(chunk[0])  # pick top of the chunk
+
+    return diverse_comments
