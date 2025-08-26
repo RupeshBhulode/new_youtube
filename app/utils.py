@@ -2,6 +2,7 @@
 
 from app.youtube_api import youtube
 from app.models import hate_model, request_model, question_model, feedback_model
+from app.cache import get_cache, set_cache   # ✅ FIXED
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -9,8 +10,13 @@ import numpy as np
 
 from googleapiclient.errors import HttpError
 
+
 def analyze_video_comments(video_id: str, max_comments: int = 200):
-    # (same as before, no changes)
+    cache_key = f"comments_analysis:{video_id}:{max_comments}"
+    cached = get_cache(cache_key)
+    if cached:
+        return {"source": "cache", **cached}
+
     comments = []
     next_page_token = None
 
@@ -51,21 +57,23 @@ def analyze_video_comments(video_id: str, max_comments: int = 200):
     question_count = sum([1 for c in comments if question_model.predict([c])[0] == 1])
     feedback_count = sum([1 for c in comments if feedback_model.predict([c])[0] == 1])
 
-    return {
+    result = {
         "hate_count": hate_count,
         "request_count": request_count,
         "question_count": question_count,
         "feedback_count": feedback_count
     }
 
+    # ✅ store in cache
+    set_cache(cache_key, result, 3600)
+    return result
+
+
 def summarize_comments(comments, max_points=10):
-    
     if not comments:
         return ["No comments in this category."]
-    
-    # Filter out empty comments (optional)
+
     comments = [c for c in comments if c and isinstance(c, str)]
-    
     return comments[:max_points]
 
 
@@ -77,18 +85,18 @@ def rank_comments(comments: list, top_k: int = 10):
     vectorizer = TfidfVectorizer(stop_words='english')
     X = vectorizer.fit_transform(comments)
 
-    # Step 2: Mean vector
-    mean_vec = np.asarray(X.mean(axis=0))
+    # Step 2: Mean vector (flattened correctly ✅)
+    mean_vec = X.mean(axis=0).A1
 
-    # Step 3: Cosine similarity to mean
-    scores = cosine_similarity(X, mean_vec).flatten()
+    # Step 3: Cosine similarity
+    scores = cosine_similarity(X, mean_vec.reshape(1, -1)).flatten()
 
-    # Step 4: Sort comments by similarity
+    # Step 4: Sort
     sorted_indices = np.argsort(scores)[::-1]
     sorted_comments = [comments[i] for i in sorted_indices]
 
-    # Step 5: Chunk the sorted list into 'top_k' parts and take one from each
-    chunk_size = len(sorted_comments) // top_k
+    # Step 5: Pick diverse top_k
+    chunk_size = max(1, len(sorted_comments) // top_k)
     diverse_comments = []
 
     for i in range(top_k):
@@ -98,6 +106,6 @@ def rank_comments(comments: list, top_k: int = 10):
             break
         chunk = sorted_comments[start:end]
         if chunk:
-            diverse_comments.append(chunk[0])  # pick top of the chunk
+            diverse_comments.append(chunk[0])
 
     return diverse_comments

@@ -1,21 +1,23 @@
-# app/main.py
-
-from app.filters import filter_feedbacks, filter_questions, filter_requests
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from collections import defaultdict
+from datetime import datetime, timedelta
+import numpy as np
+
 from app.schemas import ChannelInfoSchema, MultiVideoTrendResponse, VideoTrend
 from app.youtube_api import youtube, get_channel_info_data
 from app.utils import analyze_video_comments, rank_comments, summarize_comments
+from app.filters import filter_feedbacks, filter_questions, filter_requests
 from app.models import hate_model, request_model, question_model, feedback_model
+from app.cache import get_cache, set_cache
 
-import numpy as np
-from datetime import datetime, timedelta
-from collections import defaultdict
+from googleapiclient.errors import HttpError
+
 
 app = FastAPI(
     title="YouTube Channel Info API",
     description="Fetch channel details and videos with free/premium option",
-    version="1.1"
+    version="1.2"
 )
 
 app.add_middleware(
@@ -26,6 +28,9 @@ app.add_middleware(
 )
 
 
+# -------------------------------
+# 1) Channel Info
+# -------------------------------
 @app.get("/channel_info", response_model=ChannelInfoSchema)
 async def channel_info(
     channel_name: str = Query(...),
@@ -34,11 +39,22 @@ async def channel_info(
     """
     Get channel info + videos. Premium = 10 videos, Free = 3 videos.
     """
+    cache_key = f"channel_info:{channel_name}:{is_premium}"
+    cached = get_cache(cache_key)
+    if cached:
+        return cached
+
     result = get_channel_info_data(channel_name, is_premium)
     if not result:
         raise HTTPException(status_code=404, detail="Channel not found")
+
+    set_cache(cache_key, result, 1800)  # cache for 30 min
     return result
 
+
+# -------------------------------
+# 2) Multi Video Trend
+# -------------------------------
 @app.get("/multi_video_trend", response_model=MultiVideoTrendResponse)
 async def multi_video_trend(
     channel_name: str = Query(...),
@@ -53,7 +69,7 @@ async def multi_video_trend(
         raise HTTPException(status_code=404, detail="Channel not found")
 
     trend_data = []
-    for vid in videos["latest_videos"]:   # ✅ FIXED: iterate the list, not the dict
+    for vid in videos["latest_videos"]:
         counts = analyze_video_comments(vid["video_id"])
         trend_data.append(VideoTrend(
             video_id=vid["video_id"],
@@ -67,17 +83,24 @@ async def multi_video_trend(
     return {"trend_data": trend_data}
 
 
-
+# -------------------------------
+# 3) Video Analysis
+# -------------------------------
 @app.get("/video_analysis")
 async def video_analysis(
     video_id: str = Query(...),
-    is_premium: bool = Query(False)
+    is_premium: bool = Query(False),
+    batch_size: int = Query(50, description="Number of comments to process per batch")
 ):
     """
-    Analyze single video's comments with clustering summarizer.
+    Analyze single video's comments in batches.
     Free: 200 comments
     Premium: 1000 comments
     """
+    cache_key = f"video_analysis:{video_id}:{is_premium}"
+    cached = get_cache(cache_key)
+    if cached:
+        return cached
 
     # === 1) Get video info ===
     video_response = youtube.videos().list(
@@ -98,94 +121,71 @@ async def video_analysis(
     next_page_token = None
     max_comments = 1000 if is_premium else 200
 
-    while len(comments) < max_comments:
-        request = youtube.commentThreads().list(
-            part="snippet",
-            videoId=video_id,
-            maxResults=100,
-            pageToken=next_page_token,
-            textFormat="plainText"
-        )
-        response = request.execute()
+    try:
+        while len(comments) < max_comments:
+            request = youtube.commentThreads().list(
+                part="snippet",
+                videoId=video_id,
+                maxResults=100,
+                pageToken=next_page_token,
+                textFormat="plainText"
+            )
+            response = request.execute()
 
-        for item in response["items"]:
-            comment = item["snippet"]["topLevelComment"]["snippet"]["textDisplay"]
-            comments.append(comment)
-            if len(comments) >= max_comments:
+            for item in response["items"]:
+                comment = item["snippet"]["topLevelComment"]["snippet"]["textDisplay"]
+                comments.append(comment)
+                if len(comments) >= max_comments:
+                    break
+
+            next_page_token = response.get("nextPageToken")
+            if not next_page_token:
                 break
+    except HttpError as e:
+        raise HTTPException(status_code=500, detail=f"YouTube API error: {str(e)}")
 
-        next_page_token = response.get("nextPageToken")
-        if not next_page_token:
-            break
-
-    # === 3) Classify comments ===
-    pie_chart = {
-        "hate_speech": 0,
-        "questions": 0,
-        "requests": 0,
-        "feedback": 0,
-        "neutral": 0
-    }
-
+    # === 3) Batch classify ===
+    pie_chart = {"hate_speech": 0, "questions": 0, "requests": 0, "feedback": 0, "neutral": 0}
     questions, requests, feedbacks = [], [], []
 
-    for c in comments:
-        hate = hate_model.predict([c])[0]
-        question = question_model.predict([c])[0]
-        request = request_model.predict([c])[0]
-        feedback = feedback_model.predict([c])[0]
+    # Process in batches
+    for i in range(0, len(comments), batch_size):
+        batch = comments[i:i+batch_size]
 
-        if hate:
-            pie_chart["hate_speech"] += 1
-        elif question:
-            pie_chart["questions"] += 1
-            questions.append(c)
-        elif request:
-            pie_chart["requests"] += 1
-            requests.append(c)
-        elif feedback:
-            pie_chart["feedback"] += 1
-            feedbacks.append(c)
-        else:
-            pie_chart["neutral"] += 1
+        hate_preds = hate_model.predict(batch)
+        question_preds = question_model.predict(batch)
+        request_preds = request_model.predict(batch)
+        feedback_preds = feedback_model.predict(batch)
 
-    # === 4) Summarize each category using your clustering method ===
-    """summaries = {
-        "questions": summarize_comments(questions, max_points=10),
-        "requests": summarize_comments(requests,  max_points=10),
-        "feedback": summarize_comments(feedbacks,  max_points=10)
-    }"""
-    """
+        for j, c in enumerate(batch):
+            if hate_preds[j] == 1:
+                pie_chart["hate_speech"] += 1
+            elif question_preds[j] == 1:
+                pie_chart["questions"] += 1
+                questions.append(c)
+            elif request_preds[j] == 1:
+                pie_chart["requests"] += 1
+                requests.append(c)
+            elif feedback_preds[j] == 1:
+                pie_chart["feedback"] += 1
+                feedbacks.append(c)
+            else:
+                pie_chart["neutral"] += 1
+
+    # === 4) Summarize & rank ===
+    def process_category(data, filter_fn):
+        if len(data) >= 10:
+            data = filter_fn(data)
+            data = rank_comments(data)
+        return data
+
     filters = {
-        "questions": filter_questions(questions),
-        "requests": filter_requests(requests),
-        "feedback": filter_feedbacks(feedbacks)
-
+        "questions": process_category(questions, filter_questions),
+        "requests": process_category(requests, filter_requests),
+        "feedback": process_category(feedbacks, filter_feedbacks),
     }
-    """
-    
-    questions_n = questions
-    requests_n = requests
-    feedback_n = feedbacks
 
-    if len(questions) >= 10:
-        questions_n = filter_questions(questions)
-        questions_n = rank_comments(questions_n)
-
-    if len(requests) >= 10:
-        requests_n = filter_requests(requests)
-        requests_n = rank_comments(requests_n)
-
-    if len(feedbacks) >= 10:
-        feedback_n = filter_feedbacks(feedbacks)
-        feedback_n = rank_comments(feedback_n)    
-    
-    filters = {
-    "questions": questions_n,
-    "requests": requests_n,
-    "feedback": feedback_n,
-    }
-    return {
+    result = {
         "video_id": video_id,
         "title": title,
         "thumbnail_url": thumbnail_url,
@@ -193,17 +193,23 @@ async def video_analysis(
         "summaries": filters
     }
 
+    set_cache(cache_key, result, 3600)  # cache for 1 hour
+    return result
 
+
+
+# -------------------------------
+# 4) Most Liked Comments
+# -------------------------------
 @app.get("/most_liked")
 async def most_liked_comments(video_id: str = Query(...)):
     """
-    Get the most liked comment for each category (question/request/feedback)
+    Get the most liked comment for each category (question/request/feedback).
     """
-    # === 1) Fetch all comments ===
     comments = []
     next_page_token = None
 
-    while len(comments) < 1000:  # reasonable limit
+    while len(comments) < 1000:
         request = youtube.commentThreads().list(
             part="snippet",
             videoId=video_id,
@@ -214,53 +220,50 @@ async def most_liked_comments(video_id: str = Query(...)):
         response = request.execute()
 
         for item in response["items"]:
-            comment_snippet = item["snippet"]["topLevelComment"]["snippet"]
-            comment_text = comment_snippet["textDisplay"]
-            like_count = comment_snippet["likeCount"]
-
-            comments.append((comment_text, like_count))
+            snippet = item["snippet"]["topLevelComment"]["snippet"]
+            comments.append((snippet["textDisplay"], snippet["likeCount"]))
 
         next_page_token = response.get("nextPageToken")
         if not next_page_token:
             break
 
     if not comments:
-        return {
-            "top_comments": {
-                "most_liked_question": {"text": None, "like_count": 0},
-                "most_liked_request": {"text": None, "like_count": 0},
-                "most_liked_feedback": {"text": None, "like_count": 0},
-            }
-        }
+        return {"top_comments": {
+            "most_liked_question": {"text": None, "like_count": 0},
+            "most_liked_request": {"text": None, "like_count": 0},
+            "most_liked_feedback": {"text": None, "like_count": 0},
+        }}
 
-    # === 2) Classify and find most liked for each category ===
     most_liked = {
         "question": {"text": "", "like_count": -1},
         "request": {"text": "", "like_count": -1},
         "feedback": {"text": "", "like_count": -1},
     }
 
-    for text, like_count in comments:
-        if question_model.predict([text])[0] == 1:
-            if like_count > most_liked["question"]["like_count"]:
-                most_liked["question"] = {"text": text, "like_count": like_count}
-        elif request_model.predict([text])[0] == 1:
-            if like_count > most_liked["request"]["like_count"]:
-                most_liked["request"] = {"text": text, "like_count": like_count}
-        elif feedback_model.predict([text])[0] == 1:
-            if like_count > most_liked["feedback"]["like_count"]:
-                most_liked["feedback"] = {"text": text, "like_count": like_count}
+    texts, likes = zip(*comments)
+    question_preds = question_model.predict(texts)
+    request_preds = request_model.predict(texts)
+    feedback_preds = feedback_model.predict(texts)
 
-    # === 3) Prepare response ===
-    return {
-        "top_comments": {
-            "most_liked_question": most_liked["question"],
-            "most_liked_request": most_liked["request"],
-            "most_liked_feedback": most_liked["feedback"],
-        }
-    }
+    for i, text in enumerate(texts):
+        like_count = likes[i]
+        if question_preds[i] == 1 and like_count > most_liked["question"]["like_count"]:
+            most_liked["question"] = {"text": text, "like_count": like_count}
+        elif request_preds[i] == 1 and like_count > most_liked["request"]["like_count"]:
+            most_liked["request"] = {"text": text, "like_count": like_count}
+        elif feedback_preds[i] == 1 and like_count > most_liked["feedback"]["like_count"]:
+            most_liked["feedback"] = {"text": text, "like_count": like_count}
+
+    return {"top_comments": {
+        "most_liked_question": most_liked["question"],
+        "most_liked_request": most_liked["request"],
+        "most_liked_feedback": most_liked["feedback"],
+    }}
 
 
+# -------------------------------
+# 5) Comment Trend
+# -------------------------------
 @app.get("/comment_trend")
 async def comment_trend(
     video_id: str = Query(...),
@@ -271,16 +274,13 @@ async def comment_trend(
     Free: Last 7 days
     Premium: Last 28 days
     """
-
-    # 1) How many days to look back
     days = 28 if is_premium else 7
     today = datetime.utcnow().date()
     date_counts = defaultdict(int)
 
-    # 2) Fetch comments (reuse your logic)
     comments = []
     next_page_token = None
-    max_comments = 1000  # enough for trending
+    max_comments = 1000
 
     while len(comments) < max_comments:
         request = youtube.commentThreads().list(
@@ -293,17 +293,14 @@ async def comment_trend(
         response = request.execute()
 
         for item in response["items"]:
-            comment_snippet = item["snippet"]["topLevelComment"]["snippet"]
-            published_at = comment_snippet["publishedAt"]  # ISO 8601
-            published_date = datetime.fromisoformat(
-                published_at.replace('Z', '+00:00')
-            ).date()
+            snippet = item["snippet"]["topLevelComment"]["snippet"]
+            published_at = snippet["publishedAt"]
+            published_date = datetime.fromisoformat(published_at.replace('Z', '+00:00')).date()
 
-            # Consider only comments within the time window
             if today - timedelta(days=days) <= published_date <= today:
                 date_counts[str(published_date)] += 1
 
-            comments.append(comment_snippet["textDisplay"])
+            comments.append(snippet["textDisplay"])
             if len(comments) >= max_comments:
                 break
 
@@ -311,17 +308,7 @@ async def comment_trend(
         if not next_page_token:
             break
 
-    # 3) Create ordered list for each day (even if 0 comments)
-    trend = []
-    for i in range(days):
-        day = today - timedelta(days=i)
-        trend.append({
-            "date": str(day),
-            "comment_count": date_counts.get(str(day), 0)
-        })
+    trend = [{"date": str(today - timedelta(days=i)), "comment_count": date_counts.get(str(today - timedelta(days=i)), 0)}
+             for i in range(days)]
 
-    # 4) Return with newest date last
-    return {
-        "video_id": video_id,
-        "days": list(reversed(trend))
-    }
+    return {"video_id": video_id, "days": list(reversed(trend))}
