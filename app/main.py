@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from collections import defaultdict
 from datetime import datetime, timedelta
 import numpy as np
-
+from fastapi import Request
+from app.rate_limiter import check_rate_limit
 from app.schemas import ChannelInfoSchema, MultiVideoTrendResponse, VideoTrend
 from app.youtube_api import youtube, get_channel_info_data
 from app.utils import analyze_video_comments, rank_comments, summarize_comments
@@ -33,23 +34,27 @@ app.add_middleware(
 # -------------------------------
 @app.get("/channel_info", response_model=ChannelInfoSchema)
 async def channel_info(
+    request: Request,
     channel_name: str = Query(...),
     is_premium: bool = Query(False)
 ):
-    """
-    Get channel info + videos. Premium = 10 videos, Free = 3 videos.
-    """
     cache_key = f"channel_info:{channel_name}:{is_premium}"
     cached = get_cache(cache_key)
     if cached:
-        return cached
+        return cached  # Serve from cache, no rate limit consumed
+
+    # Only check rate limit on cache miss
+    client_ip = request.client.host
+    limit = 50 if is_premium else 5
+    check_rate_limit(client_ip, limit)
 
     result = get_channel_info_data(channel_name, is_premium)
     if not result:
         raise HTTPException(status_code=404, detail="Channel not found")
 
-    set_cache(cache_key, result, 1800)  # cache for 30 min
+    set_cache(cache_key, result, 1800)
     return result
+
 
 
 # -------------------------------
@@ -57,13 +62,19 @@ async def channel_info(
 # -------------------------------
 @app.get("/multi_video_trend", response_model=MultiVideoTrendResponse)
 async def multi_video_trend(
+    request: Request,
     channel_name: str = Query(...),
     is_premium: bool = Query(False)
-):
-    """
-    Get trend data (hate/request/question/feedback counts) for multiple videos.
-    Free = top 3, Premium = top 10.
-    """
+): 
+    cache_key = f"multi_video_trend:{channel_name}:{is_premium}"
+    cached = get_cache(cache_key)
+    if cached:
+        return cached
+
+    client_ip = request.client.host
+    limit = 50 if is_premium else 5
+    check_rate_limit(client_ip, limit)
+
     videos = get_channel_info_data(channel_name, is_premium)
     if not videos:
         raise HTTPException(status_code=404, detail="Channel not found")
@@ -80,6 +91,7 @@ async def multi_video_trend(
             feedback_count=counts["feedback_count"]
         ))
 
+    set_cache(cache_key, {"trend_data": trend_data}, 1800)
     return {"trend_data": trend_data}
 
 
@@ -88,19 +100,19 @@ async def multi_video_trend(
 # -------------------------------
 @app.get("/video_analysis")
 async def video_analysis(
+    request: Request,
     video_id: str = Query(...),
     is_premium: bool = Query(False),
     batch_size: int = Query(50, description="Number of comments to process per batch")
-):
-    """
-    Analyze single video's comments in batches.
-    Free: 200 comments
-    Premium: 1000 comments
-    """
+):  
     cache_key = f"video_analysis:{video_id}:{is_premium}"
     cached = get_cache(cache_key)
     if cached:
         return cached
+
+    client_ip = request.client.host
+    limit = 50 if is_premium else 5
+    check_rate_limit(client_ip, limit)
 
     # === 1) Get video info ===
     video_response = youtube.videos().list(
@@ -202,7 +214,19 @@ async def video_analysis(
 # 4) Most Liked Comments
 # -------------------------------
 @app.get("/most_liked")
-async def most_liked_comments(video_id: str = Query(...)):
+async def most_liked_comments(
+    request: Request,
+    video_id: str = Query(...),
+    is_premium: bool = Query(False)  # Add this
+):
+    cache_key = f"most_liked:{video_id}:{is_premium}"
+    cached = get_cache(cache_key)
+    if cached:
+        return cached
+
+    client_ip = request.client.host
+    limit = 50 if is_premium else 5
+    check_rate_limit(client_ip, limit)
     """
     Get the most liked comment for each category (question/request/feedback).
     """
@@ -266,9 +290,18 @@ async def most_liked_comments(video_id: str = Query(...)):
 # -------------------------------
 @app.get("/comment_trend")
 async def comment_trend(
+    request: Request,
     video_id: str = Query(...),
     is_premium: bool = Query(False)
-):
+):  
+    cache_key = f"comment_trend:{video_id}:{is_premium}"
+    cached = get_cache(cache_key)
+    if cached:
+        return cached
+
+    client_ip = request.client.host
+    limit = 50 if is_premium else 5
+    check_rate_limit(client_ip, limit)
     """
     Returns daily comment count trend for a video.
     Free: Last 7 days
