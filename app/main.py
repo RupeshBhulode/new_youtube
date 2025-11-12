@@ -46,7 +46,12 @@ async def channel_info(
     # Only check rate limit on cache miss
     client_ip = request.client.host
     limit = 50 if is_premium else 5
-    check_rate_limit(client_ip, limit)
+    from app.rate_limiter import is_blocked, record_cache_miss
+    if is_blocked(client_ip):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+
+    # Record unique cache-miss before calling external API
+    record_cache_miss(client_ip, cache_key, limit=limit, window=3600, block_ttl=300)
 
     result = get_channel_info_data(channel_name, is_premium)
     if not result:
@@ -73,7 +78,12 @@ async def multi_video_trend(
 
     client_ip = request.client.host
     limit = 50 if is_premium else 5
-    check_rate_limit(client_ip, limit)
+    from app.rate_limiter import is_blocked, record_cache_miss
+    if is_blocked(client_ip):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+
+    # Record unique cache-miss before calling external API
+    record_cache_miss(client_ip, cache_key, limit=limit, window=3600, block_ttl=300)
 
     videos = get_channel_info_data(channel_name, is_premium)
     if not videos:
@@ -112,7 +122,12 @@ async def video_analysis(
 
     client_ip = request.client.host
     limit = 50 if is_premium else 5
-    check_rate_limit(client_ip, limit)
+    from app.rate_limiter import is_blocked, record_cache_miss
+    if is_blocked(client_ip):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+
+    # Record unique cache-miss before calling external API
+    record_cache_miss(client_ip, cache_key, limit=limit, window=3600, block_ttl=300)
 
     # === 1) Get video info ===
     video_response = youtube.videos().list(
@@ -226,7 +241,12 @@ async def most_liked_comments(
 
     client_ip = request.client.host
     limit = 50 if is_premium else 5
-    check_rate_limit(client_ip, limit)
+    from app.rate_limiter import is_blocked, record_cache_miss
+    if is_blocked(client_ip):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+
+    # Record unique cache-miss before calling external API
+    record_cache_miss(client_ip, cache_key, limit=limit, window=3600, block_ttl=300)
     """
     Get the most liked comment for each category (question/request/feedback).
     """
@@ -301,7 +321,12 @@ async def comment_trend(
 
     client_ip = request.client.host
     limit = 50 if is_premium else 5
-    check_rate_limit(client_ip, limit)
+    from app.rate_limiter import is_blocked, record_cache_miss
+    if is_blocked(client_ip):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+
+    # Record unique cache-miss before calling external API
+    record_cache_miss(client_ip, cache_key, limit=limit, window=3600, block_ttl=300)
     """
     Returns daily comment count trend for a video.
     Free: Last 7 days
