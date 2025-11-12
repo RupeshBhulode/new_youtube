@@ -14,7 +14,6 @@ redis_client = redis.Redis(
     port=int(os.getenv("REDIS_PORT", 6379)),
     password=os.getenv("REDIS_PASSWORD"),
     ssl=True,                     # ✅ Must be True for Redis Cloud
-    ssl_context=ssl_context,      # ✅ Adds trusted CA certificates
     decode_responses=True,
     socket_connect_timeout=5,
     socket_timeout=5
