@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 import numpy as np
 from fastapi import Request
-from app.rate_limiter import check_rate_limit
+
 from app.schemas import ChannelInfoSchema, MultiVideoTrendResponse, VideoTrend
 from app.youtube_api import youtube, get_channel_info_data
 from app.utils import analyze_video_comments, rank_comments, summarize_comments
