@@ -1,105 +1,106 @@
-# app/cache.py
-import threading
+import sqlite3
 import json
-from cachetools import TTLCache
-from fastapi.encoders import jsonable_encoder
+import time
+import threading
+from typing import Any, Optional
 
-# Config: tune these as needed
-DEFAULT_MAX_ITEMS = 4096      # max number of keys to store
-DEFAULT_TTL_SECONDS = 3600    # default TTL for items (1 hour)
+_DB_PATH = "cache.sqlite3"
+_lock = threading.Lock()
 
-# In-memory caches
-_main_cache = TTLCache(maxsize=DEFAULT_MAX_ITEMS, ttl=DEFAULT_TTL_SECONDS)
-_lock = threading.RLock()  # ensure thread-safety for multi-threaded servers
+def _get_conn():
+    conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
+    conn.execute("""CREATE TABLE IF NOT EXISTS cache (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        expire_ts REAL
+    )""")
+    conn.commit()
+    return conn
 
-def get_cache(key: str):
-    """
-    Return Python object (already JSON-loaded) or None.
-    Usage unchanged: cached = get_cache(cache_key)
-    """
+def get_cache(key: str) -> Optional[Any]:
     with _lock:
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT value, expire_ts FROM cache WHERE key = ?", (key,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        val_text, expire_ts = row
+        if expire_ts is not None and expire_ts <= time.time():
+            # expired => delete and return None
+            try:
+                conn = _get_conn()
+                conn.execute("DELETE FROM cache WHERE key = ?", (key,))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+            return None
         try:
-            val = _main_cache.get(key, None)
-            if val is None:
-                return None
-            # stored value already JSON-serializable (we store JSON string)
-            return json.loads(val)
-        except Exception as e:
-            # fail-safe: do not raise — return None so endpoints compute fresh data
-            print("Warning: in-memory cache GET failed:", e)
+            return json.loads(val_text)
+        except Exception:
             return None
 
-def set_cache(key: str, value, ttl: int = DEFAULT_TTL_SECONDS):
-    """
-    Store value in cache. value can be Pydantic models, dicts, lists, etc.
-    We encode to JSON and store as string.
-    """
-    try:
-        serializable = jsonable_encoder(value)
-        payload = json.dumps(serializable)
-    except Exception as e:
-        # If serialization fails, skip caching
-        print("Warning: serialization for cache failed:", e)
-        return
-
+def set_cache(key: str, value: Any, ttl_seconds: int = None) -> bool:
+    expire_ts = time.time() + ttl_seconds if ttl_seconds is not None else None
+    val_text = json.dumps(value)
     with _lock:
-        try:
-            # Create a short-lived per-key cache if ttl differs from default
-            if ttl != DEFAULT_TTL_SECONDS:
-                # short path: put entry with custom ttl by updating a temporary cache
-                # cachetools.TTLCache has a per-cache TTL, so emulate by storing expiry inside payload
-                # Simpler: respect DEFAULT_TTL_SECONDS for now; for custom TTL, we store with DEFAULT and ignore exact expire
-                # If you need per-key TTL accurately, we could implement a wrapper — tell me and I'll add it.
-                pass
-            _main_cache[key] = payload
-        except Exception as e:
-            print("Warning: in-memory cache SET failed:", e)
+        conn = _get_conn()
+        conn.execute("INSERT OR REPLACE INTO cache (key, value, expire_ts) VALUES (?, ?, ?)",
+                     (key, val_text, expire_ts))
+        conn.commit()
+        conn.close()
+    return True
 
-# Helper: clear cache (useful for debugging)
-def clear_cache():
+def clear_cache(key: str) -> None:
     with _lock:
-        _main_cache.clear()
+        conn = _get_conn()
+        conn.execute("DELETE FROM cache WHERE key = ?", (key,))
+        conn.commit()
+        conn.close()
 
 
-# app/cache.py
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 """
 import os
 import redis
 import json
-import ssl
-import certifi
-from fastapi.encoders import jsonable_encoder
 
-# Create secure SSL context for Redis Cloud
-ssl_context = ssl.create_default_context(cafile=certifi.where())
-
+# Connect to Redis Cloud
 redis_client = redis.Redis(
-    host=os.getenv("REDIS_HOST"),
-    port=int(os.getenv("REDIS_PORT", 6379)),
-    password=os.getenv("REDIS_PASSWORD"),
-    ssl=True,                     # ✅ Must be True for Redis Cloud
-    decode_responses=True,
-    socket_connect_timeout=5,
-    socket_timeout=5
+    host="redis-14785.c16.us-east-1-2.ec2.cloud.redislabs.com",
+    port=14785,
+    password="387C9ui6CmnZNZWRhlv0BFmUyOpvOqPw",
+    # Redis Cloud requires TLS
+    decode_responses=True
 )
 
 def get_cache(key: str):
-    try:
-        cached = redis_client.get(key)
-        if cached:
-            return json.loads(cached)
-        return None
-    except Exception as e:
-        print("⚠️ Redis GET failed:", e)
-        return None
+    cached = redis_client.get(key)
+    if cached:
+        return json.loads(cached)
+    return None
 
-def set_cache(key: str, value, ttl: int = 3600):
-    try:
-        serializable = jsonable_encoder(value)
-        redis_client.setex(key, ttl, json.dumps(serializable))
-    except Exception as e:
-        print("⚠️ Redis SET failed:", e)  """
+def set_cache(key: str, value: dict, ttl: int = 3600):
+    redis_client.setex(key, ttl, json.dumps(value))
 
+"""
 
 
 
