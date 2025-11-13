@@ -4,6 +4,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 import numpy as np
 from fastapi import Request
+# from app.rate_limiter import check_rate_limit   # old
+from app.rate_limiter import increment_if_allowed, get_remaining, ensure_allowed_or_raise
 
 from app.schemas import ChannelInfoSchema, MultiVideoTrendResponse, VideoTrend
 from app.youtube_api import youtube, get_channel_info_data
@@ -46,18 +48,23 @@ async def channel_info(
     # Only check rate limit on cache miss
     client_ip = request.client.host
     limit = 50 if is_premium else 5
-    from app.rate_limiter import is_blocked, record_cache_miss
-    if is_blocked(client_ip):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    window = 3600  # 1 hour (adjust if you want)
 
-    # Record unique cache-miss before calling external API
-    record_cache_miss(client_ip, cache_key, limit=limit, window=3600, block_ttl=300)
+    allowed = increment_if_allowed(client_ip, limit, window)
+    if not allowed:
+        # Optionally include Retry-After in headers by computing reset seconds:
+        rem_info = get_remaining(client_ip, limit, window)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"}, headers={"Retry-After": str(rem_info["reset_in_seconds"])})
 
     result = get_channel_info_data(channel_name, is_premium)
     if not result:
+        # Since we already incremented for this attempt, you may decide to decrement on failure.
+        # For simplicity, we do not decrement here. If you want to decrement on 404, implement that.
         raise HTTPException(status_code=404, detail="Channel not found")
 
     set_cache(cache_key, result, 1800)
+
     return result
 
 
@@ -78,12 +85,7 @@ async def multi_video_trend(
 
     client_ip = request.client.host
     limit = 50 if is_premium else 5
-    from app.rate_limiter import is_blocked, record_cache_miss
-    if is_blocked(client_ip):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
-
-    # Record unique cache-miss before calling external API
-    record_cache_miss(client_ip, cache_key, limit=limit, window=3600, block_ttl=300)
+    
 
     videos = get_channel_info_data(channel_name, is_premium)
     if not videos:
@@ -101,7 +103,12 @@ async def multi_video_trend(
             feedback_count=counts["feedback_count"]
         ))
 
-    set_cache(cache_key, {"trend_data": trend_data}, 1800)
+    set_cache(
+    cache_key,
+    {"trend_data": [t.dict() for t in trend_data]},
+    1800
+)
+
     return {"trend_data": trend_data}
 
 
@@ -122,12 +129,7 @@ async def video_analysis(
 
     client_ip = request.client.host
     limit = 50 if is_premium else 5
-    from app.rate_limiter import is_blocked, record_cache_miss
-    if is_blocked(client_ip):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
-
-    # Record unique cache-miss before calling external API
-    record_cache_miss(client_ip, cache_key, limit=limit, window=3600, block_ttl=300)
+    
 
     # === 1) Get video info ===
     video_response = youtube.videos().list(
@@ -241,12 +243,7 @@ async def most_liked_comments(
 
     client_ip = request.client.host
     limit = 50 if is_premium else 5
-    from app.rate_limiter import is_blocked, record_cache_miss
-    if is_blocked(client_ip):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
-
-    # Record unique cache-miss before calling external API
-    record_cache_miss(client_ip, cache_key, limit=limit, window=3600, block_ttl=300)
+   
     """
     Get the most liked comment for each category (question/request/feedback).
     """
@@ -321,12 +318,7 @@ async def comment_trend(
 
     client_ip = request.client.host
     limit = 50 if is_premium else 5
-    from app.rate_limiter import is_blocked, record_cache_miss
-    if is_blocked(client_ip):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
-
-    # Record unique cache-miss before calling external API
-    record_cache_miss(client_ip, cache_key, limit=limit, window=3600, block_ttl=300)
+  
     """
     Returns daily comment count trend for a video.
     Free: Last 7 days
